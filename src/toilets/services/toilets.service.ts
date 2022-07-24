@@ -1,6 +1,11 @@
-import { InternalServerErrorException } from '@nestjs/common';
+import {
+  CACHE_MANAGER,
+  Inject,
+  InternalServerErrorException,
+} from '@nestjs/common';
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
+import { Cache } from 'cache-manager';
 import { ReviewEntity } from 'src/reviews/reviews.entity';
 import { UserEntity } from 'src/users/users.entity';
 import { Repository } from 'typeorm';
@@ -18,11 +23,17 @@ export class ToiletsService {
     private readonly usersRepository: Repository<UserEntity>,
     @InjectRepository(ReviewEntity)
     private readonly reviewsRepository: Repository<ReviewEntity>,
+    @Inject(CACHE_MANAGER)
+    private readonly cahceManager: Cache,
   ) {}
 
   async aroundToilet(userLocation: ToiletAroundDto) {
     const { lat, lng, dist } = userLocation;
     try {
+      const cachedToilets = await this.cahceManager.get('toilets');
+      if (cachedToilets) {
+        return cachedToilets;
+      }
       const toilets = await this.toiletsRepository.query(`
           SELECT
           t.*, (
@@ -42,6 +53,9 @@ export class ToiletsService {
           ORDER BY distance
           LIMIT 0, 20;`);
 
+      await this.cahceManager.set('toilets', toilets, {
+        ttl: 600,
+      });
       return toilets;
     } catch (err) {
       throw new InternalServerErrorException(err.message);
