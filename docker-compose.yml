@@ -30,3 +30,18 @@ services:
       MYSQL_DATABASE: '${MYSQL_DATABASE}'
       MYSQL_USER: '${MYSQL_USER}'
       MYSQL_PASSWORD: '${MYSQL_PASSWORD}'
+
+  redis:
+    container_name: redis
+    image: redis
+    ports:
+      - 6379:6379
+
+  redis-commander:
+    container_name: redis-commander
+    hostname: redis-commander
+    image: ghcr.io/joeferner/redis-commander:latest
+    environment:
+      - REDIS_HOSTS= ${REDIS_HOST}:redis:6379
+    ports:
+      - '8081:8081'
