@@ -17,6 +17,7 @@ import { OptionsModule } from './options/options.module';
 import { ToiletEntity } from './toilets/toilets.entity';
 import { ReviewEntity } from './reviews/reviews.entity';
 import { OptionEntity } from './options/options.entity';
+import { RedisModule } from './redis/redis.module';
 
 const typeOrmModuleOptions = {
   useFactory: async (): Promise<TypeOrmModuleOptions> => ({
@@ -62,6 +63,7 @@ const typeOrmModuleOptions = {
     ReviewsModule,
     ToiletsModule,
     OptionsModule,
+    RedisModule,
   ],
   controllers: [AppController],
   providers: [AppService],
