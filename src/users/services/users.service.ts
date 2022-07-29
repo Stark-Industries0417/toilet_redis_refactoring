@@ -1,25 +1,22 @@
 import { Injectable, InternalServerErrorException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { Repository, Connection } from 'typeorm';
 import { UserRegisterDto } from '../dtos/user.register.dto';
 import { UserEntity } from '../users.entity';
 import * as bcrypt from 'bcrypt';
 import { UserResponseDto } from '../dtos/user.response.dto';
-import { AwsService } from 'src/aws.service';
 import { ConflictException } from '@nestjs/common';
 import { UserEditNicknameInputDto } from '../dtos/user.modify.nickname.dto';
 import { UserModifyPasswordDto } from '../dtos/user.modifyPassword.dto';
 import { UserEmailDto } from '../dtos/user.email.dto';
-import { ToiletEntity } from 'src/toilets/toilets.entity';
+import { query } from 'express';
 
 @Injectable()
 export class UsersService {
   constructor(
     @InjectRepository(UserEntity)
     private readonly usersRepository: Repository<UserEntity>,
-    @InjectRepository(ToiletEntity)
-    private readonly toiletsRepository: Repository<ToiletEntity>,
-    private readonly awsService: AwsService,
+    private readonly connection: Connection,
   ) {}
 
   private readonly userFilter = (user: UserEntity): UserResponseDto => ({
@@ -48,16 +45,25 @@ export class UsersService {
       throw new ConflictException('이미 사용중인 닉네임 입니다.');
     }
     const imgUrl = userImg;
-
     const hashedPassword = await bcrypt.hash(password, 10);
 
-    const user = await this.usersRepository.save({
-      email,
-      password: hashedPassword,
-      nickname,
-      imgUrl,
-    });
-    return this.userFilter(user);
+    const queryRunner = this.connection.createQueryRunner();
+    await queryRunner.connect();
+    await queryRunner.startTransaction();
+
+    try {
+      const user = queryRunner.manager
+        .getRepository(UserEntity)
+        .create({ email, password: hashedPassword, nickname, imgUrl });
+      await queryRunner.manager.getRepository(UserEntity).save(user);
+      await queryRunner.commitTransaction();
+      return this.userFilter(user);
+    } catch (e) {
+      await queryRunner.rollbackTransaction();
+      throw new InternalServerErrorException(e.message);
+    } finally {
+      await queryRunner.release();
+    }
   }
 
   async checkEmail(userEmailDto: UserEmailDto) {
@@ -76,16 +82,27 @@ export class UsersService {
     user: UserEntity,
     { nickname }: UserEditNicknameInputDto,
   ) {
-    const findNickname = await this.usersRepository.findOne({
-      where: { nickname },
-    });
-    if (findNickname)
-      throw new ConflictException('이미 사용중인 닉네임 입니다.');
+    const queryRunner = this.connection.createQueryRunner();
+    await queryRunner.connect();
+    await queryRunner.startTransaction();
+
     try {
+      const findNickname = await queryRunner.manager
+        .getRepository(UserEntity)
+        .findOne({ where: { nickname } });
+
+      if (findNickname)
+        throw new ConflictException('이미 사용중인 닉네임 입니다.');
+
       user.nickname = nickname;
-      return await this.usersRepository.save(user);
+      await queryRunner.manager.getRepository(UserEntity).save(user);
+      await queryRunner.commitTransaction();
+      return this.userFilter(user);
     } catch (e) {
+      await queryRunner.rollbackTransaction();
       throw new InternalServerErrorException(e.message);
+    } finally {
+      await queryRunner.release();
     }
   }
 
@@ -93,13 +110,21 @@ export class UsersService {
     userInfo: UserEntity,
     modifyImg: string,
   ): Promise<UserResponseDto> {
-    const user = await this.usersRepository.findOne({
-      where: userInfo,
-    });
-    user.imgUrl = modifyImg;
-    await this.usersRepository.save(user);
+    const queryRunner = this.connection.createQueryRunner();
+    await queryRunner.connect();
+    await queryRunner.startTransaction();
 
-    return this.userFilter(user);
+    try {
+      userInfo.imgUrl = modifyImg;
+      await queryRunner.manager.getRepository(UserEntity).save(userInfo);
+      await queryRunner.commitTransaction();
+      return this.userFilter(userInfo);
+    } catch (e) {
+      await queryRunner.rollbackTransaction();
+      throw new InternalServerErrorException(e.message);
+    } finally {
+      await queryRunner.release();
+    }
   }
 
   async modifyPassword(
@@ -107,42 +132,57 @@ export class UsersService {
     email: UserEmailDto,
     user?: UserEntity,
   ) {
+    const queryRunner = this.connection.createQueryRunner();
+    await queryRunner.connect();
+    await queryRunner.startTransaction();
+
     const { existPassword, password, checkPassword } = userModifyPasswordDto;
-
-    const userInfo = await this.usersRepository.findOne(user ? user : email);
-
-    const samePassword = await bcrypt.compare(password, userInfo.password);
-
-    if (samePassword) {
-      return '기존 비밀번호와 같습니다.';
-    }
-    if (existPassword) {
-      const validatePassword = await bcrypt.compare(
-        existPassword,
-        userInfo.password,
-      );
-      if (!validatePassword)
-        throw new ConflictException('비밀번호가 틀렸습니다.');
-    }
-
-    if (password !== checkPassword)
-      throw new ConflictException('비밀번호가 일치하지 않습니다.');
-
-    const hashedPassword = await bcrypt.hash(password, 10);
     try {
+      const userInfo = await queryRunner.manager
+        .getRepository(UserEntity)
+        .findOne(user ? user : email);
+      const samePassword = await bcrypt.compare(password, userInfo.password);
+      if (samePassword) {
+        return '기존 비밀번호와 같습니다.';
+      }
+
+      if (existPassword) {
+        const validatePassword = await bcrypt.compare(
+          existPassword,
+          userInfo.password,
+        );
+        if (!validatePassword)
+          throw new ConflictException('비밀번호가 틀렸습니다.');
+      }
+      if (password !== checkPassword)
+        throw new ConflictException('비밀번호가 일치하지 않습니다.');
+      const hashedPassword = await bcrypt.hash(password, 10);
+
       userInfo.password = hashedPassword;
-      await this.usersRepository.save(userInfo);
+      await queryRunner.manager.getRepository(UserEntity).save(userInfo);
+      await queryRunner.commitTransaction();
       return this.userFilter(userInfo);
     } catch (e) {
+      await queryRunner.rollbackTransaction();
       throw new InternalServerErrorException(e.message);
+    } finally {
+      await queryRunner.release();
     }
   }
 
   async userWithdrawal(userInfo: UserEntity) {
+    const queryRunner = this.connection.createQueryRunner();
+    await queryRunner.connect();
+    await queryRunner.startTransaction();
+
     try {
-      return await this.usersRepository.remove(userInfo);
-    } catch (err) {
-      throw new InternalServerErrorException(err.message);
+      await queryRunner.manager.getRepository(UserEntity).remove(userInfo);
+      await queryRunner.commitTransaction();
+    } catch (e) {
+      await queryRunner.rollbackTransaction();
+      throw new InternalServerErrorException(e.message);
+    } finally {
+      await queryRunner.release();
     }
   }
 }
