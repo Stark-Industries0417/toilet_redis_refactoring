@@ -15,8 +15,10 @@ services:
       - '5000:5000'
     links:
       - 'mysql:mysqldb'
+      - 'redis:redisdb'
     depends_on:
       - mysql
+      - redis
 
   mysql:
     restart: always
